@@ -61,12 +61,17 @@ async def test_judged_is_never_read_from_model_output():
     """Audit invariant, not a bug fix: every judge that talks to a model only
     ever sets `judged` from a hardcoded default or constructor argument, even
     when the model's JSON smuggles a `judged` key of its own."""
-    client = _stub({"score": 0.9, "passed": True, "issues": [],
-                    "judged": "MODEL-INJECTED-VALUE"})
+    llm_client = _stub({"score": 0.9, "passed": True, "issues": [],
+                        "judged": "MODEL-INJECTED-VALUE"})
+    vision_client = _stub({
+        "subject_present": True,
+        "elements": [], "artifacts_present": False, "composition_intact": True,
+        "judged": "MODEL-INJECTED-VALUE",
+    })
 
-    llm_verdict = await LLMJudge(client, model="m", judged="artifact").evaluate(
+    llm_verdict = await LLMJudge(llm_client, model="m", judged="artifact").evaluate(
         TASK, Artifact(content="t"), "")
-    vision_verdict = await VisionJudge(client, model="v", judged="artifact").evaluate(
+    vision_verdict = await VisionJudge(vision_client, model="v", judged="artifact").evaluate(
         TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
 
     assert llm_verdict.judged == "artifact"
@@ -159,15 +164,21 @@ async def test_llm_judge_treats_unparseable_score_as_a_failure_not_a_zero(bad_pa
 
 
 @pytest.mark.parametrize("bad_payload,label", [
-    ({"passed": True, "issues": []}, "missing"),
-    ({"score": None, "passed": True, "issues": []}, "null"),
-    ({"score": "high", "passed": True, "issues": []}, "wrong-type-string"),
-    ({"score": True, "passed": True, "issues": []}, "wrong-type-bool"),
+    ({"elements": [], "artifacts_present": False, "composition_intact": True}, "missing-subject"),
+    ({"subject_present": True, "artifacts_present": False, "composition_intact": True}, "missing-elements"),
+    ({"subject_present": True, "elements": [], "composition_intact": True}, "missing-artifacts"),
+    ({"subject_present": True, "elements": [], "artifacts_present": False}, "missing-composition"),
+    ({"subject_present": "yes", "elements": [], "artifacts_present": False,
+      "composition_intact": True}, "wrong-type-string"),
 ])
-async def test_vision_judge_treats_unparseable_score_as_a_failure_not_a_zero(bad_payload, label):
+async def test_vision_judge_treats_unparseable_rubric_as_a_failure_not_a_default(bad_payload, label):
+    """2026-08-19 rubric rewrite: VisionJudge no longer asks for or reads a
+    self-reported `score` at all (llava:7b's number carried no signal --
+    see project notes). The same 'unparseable is a fail, not a silent
+    default' discipline from (c) now applies to the rubric fields instead."""
     client = _stub(bad_payload)
     art = Artifact(kind="image", meta={"image_b64": "QUJD"})
-    with pytest.raises(JudgeError, match="score"):
+    with pytest.raises(JudgeError):
         await VisionJudge(client, model="v", threshold=0.0).evaluate(TASK, art, "")
 
 

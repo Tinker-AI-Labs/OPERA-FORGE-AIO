@@ -87,10 +87,18 @@ async def test_llm_judge_sees_the_context():
 
 # --- VisionJudge -------------------------------------------------------------
 
+RUBRIC_GOOD = {
+    "subject_present": True,
+    "elements": [{"element": "tower", "matched": True}],
+    "artifacts_present": False,
+    "composition_intact": True,
+}
+
+
 async def test_vision_judge_sends_the_image_as_base64(tmp_path):
     png = tmp_path / "f.png"
     png.write_bytes(b"\x89PNG fake bytes")
-    client = StubLLMClient(default='{"score":0.8,"passed":true,"issues":[]}')
+    client = _stub(RUBRIC_GOOD)
     art = Artifact(kind="image", path=str(png), meta={"prompt": "a red tower"})
 
     v = await VisionJudge(client, model="vision").evaluate(TASK, art, "ctx")
@@ -102,7 +110,7 @@ async def test_vision_judge_sends_the_image_as_base64(tmp_path):
 
 
 async def test_vision_judge_accepts_inline_base64():
-    client = StubLLMClient(default='{"score":0.9,"passed":true}')
+    client = _stub(RUBRIC_GOOD)
     art = Artifact(kind="image", meta={"image_b64": "QUJD"})
     await VisionJudge(client, model="v").evaluate(TASK, art, "")
     assert client.calls[0]["images"] == ["QUJD"]
@@ -110,7 +118,97 @@ async def test_vision_judge_accepts_inline_base64():
 
 async def test_vision_judge_without_an_image_is_an_error():
     with pytest.raises(JudgeError, match="no readable image"):
-        await VisionJudge(_stub({"score": 1}), model="v").evaluate(TASK, Artifact(kind="image"), "")
+        await VisionJudge(_stub(RUBRIC_GOOD), model="v").evaluate(TASK, Artifact(kind="image"), "")
+
+
+async def test_vision_judge_computes_score_from_rubric_not_a_self_reported_number():
+    """The fix for the 2026-08-18 finding: llava:7b returned the identical
+    0.500 for a plausible-match goal and a wildly wrong one. VisionJudge must
+    never ask for or trust a raw number -- the score is computed from the
+    rubric's boolean observations."""
+    v = await VisionJudge(_stub(RUBRIC_GOOD), model="v").evaluate(
+        TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
+    assert v.score == pytest.approx(1.0)
+    assert v.passed is True
+    assert v.issues == []
+
+    bad = {
+        "subject_present": False,
+        "subject_note": "no fox visible",
+        "elements": [{"element": "snowy forest", "matched": False, "note": "beach instead"}],
+        "artifacts_present": True,
+        "artifacts_note": "warped limbs",
+        "composition_intact": True,
+    }
+    v2 = await VisionJudge(_stub(bad), model="v").evaluate(
+        TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
+    assert v2.score == pytest.approx(0.15)  # composition_intact=True is the only credit earned
+    assert v2.passed is False
+    assert any("subject not present" in i for i in v2.issues)
+    assert any("snowy forest" in i for i in v2.issues)
+    assert any("artifacts" in i for i in v2.issues)
+
+
+async def test_vision_judge_broken_composition_costs_points_but_does_not_zero_a_real_match():
+    """2026-08-19 revision, confirmed necessary live against both llava:7b and
+    qwen2.5vl:7b: composition_intact must NOT hard-gate the score. Both
+    models routinely set it False on a coherent image that simply isn't the
+    style/medium they expected (e.g. a 3D render vs. a photo) -- gating on it
+    zeroed out otherwise-correct verdicts. It costs its own weight and no
+    more, so a real subject/element match still dominates."""
+    payload = {
+        "subject_present": True,
+        "elements": [{"element": "tower", "matched": True}],
+        "artifacts_present": False,
+        "composition_intact": False,
+        "composition_note": "not a photograph, looks like a 3D render",
+    }
+    v = await VisionJudge(_stub(payload), model="v", threshold=0.7).evaluate(
+        TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
+    assert v.score == pytest.approx(0.85)
+    assert v.passed is True, "a real subject+element match must survive one wrong composition flag"
+    assert "composition is not intact" in v.issues[0]
+
+
+async def test_vision_judge_never_reads_a_self_reported_score_or_passed_field():
+    """Even if a model smuggles score/passed into the JSON (old habit, or a
+    model that hasn't been told about the new contract), VisionJudge must
+    compute its own verdict from the rubric fields, not read theirs."""
+    payload = dict(RUBRIC_GOOD, score=0.01, passed=False)
+    v = await VisionJudge(_stub(payload), model="v", threshold=0.5).evaluate(
+        TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
+    assert v.score == pytest.approx(1.0)
+    assert v.passed is True
+
+
+@pytest.mark.parametrize("missing_key", [
+    "subject_present", "artifacts_present", "composition_intact", "elements",
+])
+async def test_vision_judge_missing_rubric_field_is_a_failure_not_a_default(missing_key):
+    payload = dict(RUBRIC_GOOD)
+    del payload[missing_key]
+    with pytest.raises(JudgeError):
+        await VisionJudge(_stub(payload), model="v").evaluate(
+            TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
+
+
+async def test_vision_judge_non_boolean_rubric_field_is_a_failure():
+    payload = dict(RUBRIC_GOOD, artifacts_present="no")
+    with pytest.raises(JudgeError):
+        await VisionJudge(_stub(payload), model="v").evaluate(
+            TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
+
+
+async def test_vision_judge_no_named_elements_defaults_to_no_penalty():
+    payload = {
+        "subject_present": True,
+        "elements": [],
+        "artifacts_present": False,
+        "composition_intact": True,
+    }
+    v = await VisionJudge(_stub(payload), model="v").evaluate(
+        TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
+    assert v.score == pytest.approx(1.0)
 
 
 # --- FrameSampleJudge --------------------------------------------------------
@@ -119,7 +217,7 @@ async def test_frame_sample_judge_reports_judged_frames(monkeypatch):
     """It never watched the video, and must not imply that it did."""
     from opera.judges import FrameSample
 
-    client = StubLLMClient(default='{"score":0.8,"passed":true,"issues":[]}')
+    client = _stub(RUBRIC_GOOD)
     judge = FrameSampleJudge(VisionJudge(client, model="v"), frames=3)
     monkeypatch.setattr(judge, "_extract",
                         lambda path: [FrameSample(index=i, b64="QUJD") for i in range(3)])
@@ -135,21 +233,26 @@ async def test_frame_sample_judge_reports_judged_frames(monkeypatch):
 async def test_frame_sample_judge_aggregates_and_labels_issues(monkeypatch):
     from opera.judges import FrameSample
 
-    scores = iter([
-        '{"score":0.9,"passed":true,"issues":[]}',
-        '{"score":0.3,"passed":false,"issues":["tower is blue here"]}',
+    payloads = iter([
+        json.dumps(RUBRIC_GOOD),
+        json.dumps({
+            "subject_present": True,
+            "elements": [{"element": "tower", "matched": False, "note": "tower is blue here"}],
+            "artifacts_present": False,
+            "composition_intact": True,
+        }),
     ])
-    client = StubLLMClient(default=lambda s, p: next(scores))
+    client = StubLLMClient(default=lambda s, p: next(payloads))
     judge = FrameSampleJudge(VisionJudge(client, model="v"), frames=2)
     monkeypatch.setattr(judge, "_extract",
                         lambda path: [FrameSample(index=i, b64="QUJD") for i in range(2)])
 
     v = await judge.evaluate(TASK, Artifact(kind="video", path="/x.mp4"), "")
 
-    assert v.score == pytest.approx(0.6)
-    assert v.passed is False
-    assert v.issues == ["frame 1: tower is blue here"]
-    assert v.detail["per_frame_scores"] == [0.9, 0.3]
+    assert v.score == pytest.approx(0.8)
+    assert v.passed is False, "frame 1 scored below its own threshold, so the whole clip must fail"
+    assert v.issues == ["frame 1: prompt element not matched: tower (tower is blue here)"]
+    assert v.detail["per_frame_scores"] == pytest.approx([1.0, 0.6])
 
 
 async def test_frame_sample_judge_needs_a_path():
@@ -290,8 +393,15 @@ async def test_agreement_records_no_disagreement_note():
     assert v.passed is True and "judge_disagreement" not in v.detail
 
 
-async def test_vision_judge_applies_the_same_reconciliation():
+async def test_vision_judge_has_nothing_left_to_reconcile():
+    """2026-08-19: VisionJudge no longer asks for a self-reported `passed` at
+    all, so there is no declared claim left to reconcile against its score --
+    passed is just score >= threshold, computed from the rubric alone."""
     art = Artifact(kind="image", meta={"image_b64": "QUJD"})
-    v = await VisionJudge(_stub({"score": 0.1, "passed": True}), model="v",
-                          threshold=0.7).evaluate(TASK, art, "")
+    bad = {
+        "subject_present": False,
+        "elements": [], "artifacts_present": True, "composition_intact": True,
+    }
+    v = await VisionJudge(_stub(bad), model="v", threshold=0.7).evaluate(TASK, art, "")
     assert v.passed is False
+    assert "judge_disagreement" not in v.detail

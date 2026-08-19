@@ -8,11 +8,19 @@ from opera.schemas import Artifact, Task, Verdict
 
 ARTISTA_VISION_SYSTEM = (
     "You review generated images. Assess the image against the brief and the "
-    "project's established style, palette and subject continuity.\n"
-    "Reply with JSON only:\n"
-    '{"score": 0.0-1.0, "passed": true|false, "issues": ["..."]}\n'
-    "Issues must describe what to change in the next generation, specifically. "
-    "Judge only what you can see."
+    "project's established style, palette and subject continuity. Do not "
+    "self-assess a pass/fail or a numeric score -- report only what you "
+    "actually observe, as JSON:\n"
+    '{"subject_present": true|false, "subject_note": "...", '
+    '"elements": [{"element": "<a distinct visual element from the brief or '
+    'style guide>", "matched": true|false, "note": "..."}], '
+    '"artifacts_present": true|false, "artifacts_note": "...", '
+    '"composition_intact": true|false, "composition_note": "..."}\n'
+    "List each distinct subject, palette, style or setting element the brief "
+    "or project context names as its own entry in 'elements'. "
+    "'artifacts_present' means visible rendering defects, not stylistic "
+    "choices. Notes become the issue list, so be specific about what to "
+    "change in the next generation. Judge only what you can see."
 )
 
 ARTISTA_PROMPT_SYSTEM = (

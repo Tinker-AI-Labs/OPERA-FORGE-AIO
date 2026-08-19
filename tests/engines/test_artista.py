@@ -160,8 +160,17 @@ async def test_unavailable_comfyui_defers_the_task_in_a_real_run(tmp_path):
 
 # --- the judge reports what it actually assessed -----------------------------
 
+RUBRIC_GOOD = json.dumps({
+    "subject_present": True,
+    "elements": [], "artifacts_present": False, "composition_intact": True,
+})
+
+
 async def test_image_verdict_says_artifact_and_prompt_verdict_says_plan():
-    client = StubLLMClient(default='{"score":0.9,"passed":true,"issues":[]}')
+    client = StubLLMClient([
+        ("You review image-generation prompts", '{"score":0.9,"passed":true,"issues":[]}'),
+        ("You review generated images", RUBRIC_GOOD),
+    ])
     judge = artista.build_judge(client, vision_model="v", text_model="t")
     from opera.schemas import Task
 
@@ -177,7 +186,7 @@ async def test_vision_judge_actually_receives_the_generated_bytes(tmp_path):
     producer, _ = comfy_producer(tmp_path)
     art = await producer.produce(Brief(task_id="t1", goal="x", kind="image", role="retoucher"))
 
-    client = StubLLMClient(default='{"score":0.8,"passed":true,"issues":[]}')
+    client = StubLLMClient(default=RUBRIC_GOOD)
     judge = artista.build_judge(client, vision_model="v", text_model="t")
     from opera.schemas import Task
 
@@ -191,8 +200,12 @@ async def test_full_produce_judge_revise_cycle_over_images(tmp_path):
     """A media producer gets the same review loop an LLM agent does -- which is
     the thing the prototype did not have."""
     verdicts = iter([
-        '{"score":0.3,"passed":false,"issues":["the tower should be red"]}',
-        '{"score":0.9,"passed":true,"issues":[]}',
+        json.dumps({
+            "subject_present": True,
+            "elements": [{"element": "tower", "matched": False, "note": "tower should be red"}],
+            "artifacts_present": False, "composition_intact": True,
+        }),
+        RUBRIC_GOOD,
     ])
     client = StubLLMClient(default=lambda s, p: next(verdicts))
     producer, state = comfy_producer(tmp_path)
@@ -224,7 +237,7 @@ async def test_two_stage_run_prompt_then_image(tmp_path):
     client = StubLLMClient(
         [("You are an art director", plan),
          ("You review image-generation prompts", '{"score":0.9,"passed":true,"issues":[]}'),
-         ("You review generated images", '{"score":0.9,"passed":true,"issues":[]}')],
+         ("You review generated images", RUBRIC_GOOD)],
         default="a red lighthouse, cold blue palette, cinematic",
     )
     producer, state = comfy_producer(tmp_path)

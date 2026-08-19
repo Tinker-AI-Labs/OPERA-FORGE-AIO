@@ -34,6 +34,24 @@ JUDGE_SYSTEM = (
     "nothing to fix. Do not restate the work."
 )
 
+VISION_RUBRIC_SYSTEM = (
+    "You are a strict image reviewer. You will be shown an image and a goal "
+    "describing what it should depict. Do not self-assess a pass/fail or a "
+    "numeric score -- report only what you actually observe, as JSON:\n"
+    '{"subject_present": true|false, "subject_note": "...", '
+    '"elements": [{"element": "<a distinct visual element named in the goal>", '
+    '"matched": true|false, "note": "..."}], '
+    '"artifacts_present": true|false, "artifacts_note": "...", '
+    '"composition_intact": true|false, "composition_note": "..."}\n'
+    "List each distinct visual element the goal names (subjects, objects, "
+    "setting, style, color) as its own entry in 'elements' with whether it is "
+    "actually present in the image. 'artifacts_present' means visible "
+    "rendering defects (garbling, warped anatomy, broken geometry, text soup) "
+    "-- not stylistic choices you personally dislike. 'composition_intact' "
+    "means the image is a coherent picture at all, not corrupted or "
+    "unreadable. Be specific in the notes; they become the issue list."
+)
+
 Check = Callable[[Artifact], tuple[bool, str]]
 AsyncCheck = Callable[[Artifact], Awaitable[tuple[bool, str]]]
 
@@ -93,6 +111,92 @@ def _reconcile(declared: Any, score: float, threshold: float) -> tuple[bool, dic
                         f"model said passed={declared} but scored {score:.2f} "
                         f"against threshold {threshold:.2f}; resolved to {passed}"}
     return passed, {}
+
+
+def _score_rubric(data: dict[str, Any], *, judge_name: str) -> tuple[float, list[str]]:
+    """Compute a VisionJudge score from structured observations, never from a
+    self-reported number.
+
+    Confirmed live 2026-08-18: llava:7b returned the identical 0.500 score
+    for a goal the image plausibly matched and one it had nothing to do with
+    (a fox-in-snow render vs. "a golden retriever on a beach") -- its number
+    carried no signal, even though its free text and `passed` boolean
+    genuinely did discriminate between the two. Same principle as
+    ``Verdict.judged``: derive the verdict from what the model actually
+    observed, never accept its self-assessment of the outcome.
+
+    Weights: subject presence and prompt-element coverage are the two things
+    that make an image *right*; freedom from artifacts and an intact
+    composition are what make it *usable*. Composition does NOT hard-gate the
+    score to zero -- confirmed live 2026-08-18 against both llava:7b and
+    qwen2.5vl:7b that weak vision models routinely misread
+    'composition_intact' as "does this look like the kind of image I
+    expected" rather than "is this technically corrupted", and set it False
+    on a perfectly coherent image that just isn't a photograph. Gating on a
+    field models this unreliable would zero out otherwise-correct verdicts;
+    weighting it lets the (empirically more reliable) subject/element signal
+    still dominate.
+    """
+    def _bool(key: str) -> bool:
+        if key not in data:
+            raise JudgeError(f"judge {judge_name!r} (vision-judge) rubric missing {key!r}")
+        val = data[key]
+        if not isinstance(val, bool):
+            raise JudgeError(
+                f"judge {judge_name!r} (vision-judge) rubric {key!r} is not a boolean: {val!r}"
+            )
+        return val
+
+    def _note(key: str) -> str:
+        val = data.get(key)
+        return str(val).strip() if val else ""
+
+    composition_intact = _bool("composition_intact")
+    subject_present = _bool("subject_present")
+    artifacts_present = _bool("artifacts_present")
+
+    elements = data.get("elements")
+    if not isinstance(elements, list):
+        raise JudgeError(
+            f"judge {judge_name!r} (vision-judge) rubric 'elements' is not a list: {elements!r}"
+        )
+    parsed_elements: list[tuple[str, bool, str]] = []
+    for item in elements:
+        if (not isinstance(item, dict) or "element" not in item
+                or not isinstance(item.get("matched"), bool)):
+            raise JudgeError(
+                f"judge {judge_name!r} (vision-judge) malformed rubric element: {item!r}"
+            )
+        parsed_elements.append(
+            (str(item["element"]), item["matched"], str(item.get("note", "")).strip())
+        )
+
+    issues: list[str] = []
+    if not composition_intact:
+        note = _note("composition_note")
+        issues.append("composition is not intact" + (f": {note}" if note else ""))
+    if not subject_present:
+        note = _note("subject_note")
+        issues.append("subject not present" + (f": {note}" if note else ""))
+    for name, matched, note in parsed_elements:
+        if not matched:
+            issues.append(f"prompt element not matched: {name}" + (f" ({note})" if note else ""))
+    if artifacts_present:
+        note = _note("artifacts_note")
+        issues.append("obvious rendering artifacts present" + (f": {note}" if note else ""))
+
+    score = 0.3 if subject_present else 0.0
+    if parsed_elements:
+        matched_count = sum(1 for _, matched, _ in parsed_elements if matched)
+        score += 0.4 * (matched_count / len(parsed_elements))
+    else:
+        # Nothing named to check against -- no evidence to penalise, so this
+        # component defaults to full credit rather than zero.
+        score += 0.4
+    score += 0.0 if artifacts_present else 0.15
+    score += 0.15 if composition_intact else 0.0
+
+    return _clamp(score), issues
 
 
 class LLMJudge:
@@ -170,7 +274,7 @@ class VisionJudge:
         name: str = "vision-judge",
         threshold: float = 0.7,
         timeout_s: float = 180.0,
-        system: str = JUDGE_SYSTEM,
+        system: str = VISION_RUBRIC_SYSTEM,
         judged: str = "artifact",
     ) -> None:
         if client is None:
@@ -215,15 +319,15 @@ class VisionJudge:
             data = extract_json_object(raw, stage="vision-judge")
         except JSONParseError as exc:
             raise JudgeError(f"judge {self.name!r} returned unparseable output: {exc}") from exc
-        score = _coerce_score(data, judge_name=self.name, stage="vision-judge")
-        passed, note = _reconcile(data.get("passed"), score, self.threshold)
+        score, issues = _score_rubric(data, judge_name=self.name)
+        passed = score >= self.threshold
         return Verdict(
             score=score,
             passed=passed,
-            issues=[str(i) for i in (data.get("issues") or []) if str(i).strip()],
+            issues=issues,
             judged=self.judged,
             judge_name=self.name,
-            detail={"model": self.model, "threshold": self.threshold, **note},
+            detail={"model": self.model, "threshold": self.threshold, "rubric": data},
         )
 
 
