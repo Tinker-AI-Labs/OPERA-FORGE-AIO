@@ -1,0 +1,23 @@
+{
+  "llm": {
+    "host": "http://127.0.0.1:11434",
+    "default_model": "qwen3:8b",
+    "vision_model": "qwen2.5vl:7b",
+    "planner_model": "qwen3:8b",
+    "judge_model": "qwen3:8b",
+    "router_model": "qwen3:8b",
+    "default_timeout_s": 180.0,
+    "max_retries": 3,
+    "backoff_base_s": 0.5,
+    "strip_think": true,
+    "no_think_roles": ["planner", "judge", "router"]
+  },
+  "loop": {
+    "max_attempts": 2,
+    "pass_threshold": 0.7,
+    "revise_only_with_issues": false
+  },
+  "context_token_budget": 1200,
+  "context_per_category": 6,
+  "ledger_compact_threshold": 500
+}

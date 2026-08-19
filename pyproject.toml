@@ -1,0 +1,21 @@
+[project]
+name = "opera"
+version = "0.1.0"
+description = "OPERA - shared produce/judge/revise/persist orchestration core for the FORGE engines"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.6", "httpx>=0.27"]
+
+[project.optional-dependencies]
+service = ["fastapi>=0.110", "uvicorn>=0.29"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+opera = "service.cli:main"
+
+[tool.setuptools]
+packages = ["opera", "opera.llm", "engines", "engines.videa", "engines.artista", "engines.musica", "service"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning:opera.*"]
