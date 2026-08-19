@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .bible import BibleWriter, LedgerWriter, ProjectStore
 from .config import OperaConfig
@@ -112,6 +112,81 @@ class Runner:
         run.finished_at = _utcnow()
         self.ledger.compact(project.ledger)
         self.store.save(project)
+        return self._report(run, project, started)
+
+    async def rerun_task_project(self, project_id: str, run_id: str, task_id: str) -> RunReport:
+        """Load, re-run one task, and leave the project persisted on disk."""
+        project = self.store.load(project_id)
+        return await self.rerun_task(project, run_id, task_id)
+
+    async def rerun_task(self, project: Project, run_id: str, task_id: str) -> RunReport:
+        """Re-execute exactly one task from an already-run ``Run``, without
+        re-running the rest of the run.
+
+        This is the data layer a FORGE shell's run dashboard needs for a
+        "re-run this task" action -- deliberately separate from
+        ``execute_task``'s own internal max_attempts loop, which bounds
+        retries *within* one produce -> judge -> revise cycle and is a
+        no-op once a task has already reached that count. A manual re-run
+        earns exactly one more production on top of whatever the task
+        already had, never bounded by (or silently swallowed by) the
+        original attempt budget.
+
+        History is never discarded: the new artifact and verdict are
+        appended as one more attempt on the same task -- ``execute_task``
+        already only ever appends to ``task.artifacts`` -- so every prior
+        attempt stays on the task exactly as it was.
+        """
+        run = next((r for r in project.runs if r.id == run_id), None)
+        if run is None:
+            raise ValueError(f"no run {run_id!r} in project {project.id!r}")
+        task = next((t for t in run.tasks if t.id == task_id), None)
+        if task is None:
+            raise ValueError(f"no task {task_id!r} in run {run_id!r}")
+
+        # Clear the task's prior terminal state so a fresh attempt can reach
+        # its own terminal state without a stale error/deferred_reason from
+        # last time being misread as still current (execute_task's _finish
+        # only sets task.error on the FAILED path -- it never clears one a
+        # prior run left behind).
+        task.status = TaskStatus.PENDING
+        task.error = None
+        task.deferred_reason = None
+        task.started_at = None
+        task.finished_at = None
+
+        started = time.monotonic()
+        role_cfg = self.spec.role_config(task.role)
+        context = self.bible.context(project.bible)
+
+        prior_attempts = task.attempts
+        rerun_max_attempts = prior_attempts + 1
+        loop_config = replace(self.config.loop, max_attempts=rerun_max_attempts)
+        if role_cfg is not None:
+            role_cfg = replace(role_cfg, max_attempts=rerun_max_attempts)
+
+        try:
+            producer = self.spec.producer_for(task.role)
+            await execute_task(
+                task, producer, self.spec.judge, context,
+                config=loop_config, role_config=role_cfg, gate=self.spec.gate,
+            )
+        except Exception as exc:  # noqa: BLE001 -- 4.4: contain the blast radius
+            task.status = TaskStatus.FAILED
+            task.error = f"{type(exc).__name__}: {exc}"
+            task.finished_at = _utcnow()
+
+        if task.status is TaskStatus.DONE and task.artifact is not None:
+            self.bible.record_artifact(project.bible, task, task.artifact)
+
+        self.ledger.record_task(
+            project.ledger, run, task,
+            duration_s=time.monotonic() - started,
+            model=role_cfg.model if role_cfg else None,
+        )
+
+        run.status = run.compute_status()
+        self.store.save(project)  # 4.6: persisted immediately, not batched
         return self._report(run, project, started)
 
     # -- internals ------------------------------------------------------------

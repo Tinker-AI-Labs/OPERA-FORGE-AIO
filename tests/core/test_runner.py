@@ -399,3 +399,108 @@ async def test_run_project_loads_by_id(tmp_path):
     project = store.create("P", "testengine")
     report = await runner.run_project(project.id, "g")
     assert report.status is RunStatus.DONE
+
+
+# --- rerun_task: the run dashboard's data layer -------------------------
+
+async def test_rerun_task_adds_a_new_attempt_without_discarding_history(tmp_path):
+    """A dashboard's "re-run this task" action: a failed task gets exactly
+    one more production, appended -- not a fresh task, not a lost attempt."""
+    producer = ScriptedProducer(["bad first draft", "much better draft"], name="writer")
+    judge = ScriptedJudge([False, True])
+    spec = make_spec(
+        roles={"writer": RoleConfig(model="test-model", kind="text", max_attempts=1)},
+        producers={"writer": producer},
+        judge=judge,
+    )
+    runner, store = make_runner(
+        tmp_path, spec=spec, planner=StaticPlanner([{"goal": "Write it", "role": "writer"}]))
+    project = store.create("P", "testengine")
+
+    report = await runner.run(project, "g")
+    task = report.run.tasks[0]
+    assert task.status is TaskStatus.FAILED
+    assert task.attempts == 1
+    assert [a.content for a in task.artifacts] == ["bad first draft"]
+
+    rerun_report = await runner.rerun_task(project, report.run.id, task.id)
+    rerun_task = rerun_report.run.tasks[0]
+
+    assert rerun_task.status is TaskStatus.DONE
+    assert rerun_task.attempts == 2
+    assert [a.content for a in rerun_task.artifacts] == ["bad first draft", "much better draft"]
+    assert rerun_task.error is None, "a stale FAILED-run error must not survive a passing rerun"
+
+    # 4.6: the rerun is persisted immediately, same discipline as a normal run.
+    reloaded = store.load(project.id).runs[0].tasks[0]
+    assert reloaded.status is TaskStatus.DONE
+    assert len(reloaded.artifacts) == 2
+
+
+async def test_rerun_task_only_touches_the_named_task(tmp_path):
+    spec = make_spec()
+    runner, store = make_runner(tmp_path, spec=spec, planner=StaticPlanner([
+        {"goal": "Write scene one", "role": "writer"},
+        {"goal": "Write scene two", "role": "writer"},
+    ]))
+    project = store.create("P", "testengine")
+    report = await runner.run(project, "g")
+    other = report.run.tasks[1]
+    other_attempts_before = other.attempts
+    other_artifacts_before = list(other.artifacts)
+
+    target = report.run.tasks[0]
+    rerun_report = await runner.rerun_task(project, report.run.id, target.id)
+
+    untouched = rerun_report.run.tasks[1]
+    assert untouched.attempts == other_attempts_before
+    assert untouched.artifacts == other_artifacts_before
+
+
+async def test_rerun_task_unknown_run_id_raises(tmp_path):
+    runner, store = make_runner(tmp_path)
+    project = store.create("P", "testengine")
+    with pytest.raises(ValueError, match="run"):
+        await runner.rerun_task(project, "run_nope", "t_nope")
+
+
+async def test_rerun_task_unknown_task_id_raises(tmp_path):
+    runner, store = make_runner(
+        tmp_path, planner=StaticPlanner([{"goal": "Write it", "role": "writer"}]))
+    project = store.create("P", "testengine")
+    report = await runner.run(project, "g")
+    with pytest.raises(ValueError, match="task"):
+        await runner.rerun_task(project, report.run.id, "t_nope")
+
+
+async def test_rerun_task_still_defers_when_producer_still_unavailable(tmp_path):
+    spec = make_spec(producers={
+        "writer": ScriptedProducer(["a"], name="writer"),
+        "coder": ScriptedProducer(["b"], name="coder", kind="code"),
+        "painter": UnavailableProducer(name="painter", kind="image"),
+    })
+    runner, store = make_runner(tmp_path, spec=spec, planner=StaticPlanner(
+        [{"goal": "Paint it", "role": "painter", "kind": "image"}]))
+    project = store.create("P", "testengine")
+
+    report = await runner.run(project, "g")
+    task = report.run.tasks[0]
+    assert task.status is TaskStatus.DEFERRED
+
+    rerun_report = await runner.rerun_task(project, report.run.id, task.id)
+    rerun_task = rerun_report.run.tasks[0]
+    assert rerun_task.status is TaskStatus.DEFERRED, (
+        "a rerun must not fabricate success just because it was asked for"
+    )
+    assert rerun_task.artifacts == []
+
+
+async def test_rerun_task_project_loads_by_id(tmp_path):
+    runner, store = make_runner(
+        tmp_path, planner=StaticPlanner([{"goal": "Write it", "role": "writer"}]))
+    project = store.create("P", "testengine")
+    report = await runner.run_project(project.id, "g")
+    task = report.run.tasks[0]
+
+    rerun_report = await runner.rerun_task_project(project.id, report.run.id, task.id)
+    assert rerun_report.run.tasks[0].attempts == task.attempts + 1
