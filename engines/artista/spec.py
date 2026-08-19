@@ -58,6 +58,16 @@ def default_roles(llm: LLMConfig | None = None) -> dict[str, RoleConfig]:
         ),
         "retoucher": RoleConfig(
             model=llm.vision_model, kind="image", max_attempts=2, timeout_s=600.0,
+            # 2026-08-19: VisionJudge's rubric ranks images correctly but
+            # rarely clears an absolute pass_threshold even on genuinely good
+            # work (measured ~0.567-0.7 against a real vision model) --
+            # threshold-gating would fail everything. best_of_n keeps the
+            # ranking useful without needing it to double as a pass bar.
+            # ceiling=0.85 is a real "good enough, don't render again" bar
+            # given how expensive a render is on this hardware (measured
+            # several minutes each, see docs/ARTISTA_HARDWARE_FINDINGS.md) --
+            # an attempt that clearly good stops the batch early.
+            policy="best_of_n", ceiling=0.85,
         ),
     }
 

@@ -38,6 +38,14 @@ def _limits(config: LoopConfig, role: RoleConfig | None) -> tuple[int, float]:
     return max(1, int(max_attempts)), float(threshold)
 
 
+def _policy(config: LoopConfig, role: RoleConfig | None) -> str:
+    return role.policy if role is not None else config.policy
+
+
+def _ceiling(config: LoopConfig, role: RoleConfig | None) -> float | None:
+    return role.ceiling if role is not None else config.ceiling
+
+
 async def execute_task(
     task: Task,
     producer: Producer,
@@ -51,10 +59,13 @@ async def execute_task(
     """Run one task to a final, judged artifact.
 
     Returns with ``task.artifact`` being the artifact that ``task.verdict``
-    describes -- always the same bytes, never a successor (spec 4.1).
+    describes -- always the same bytes, never a successor (spec 4.1). Which
+    policy decides *how* that artifact is chosen -- see ``_execute_threshold``
+    (revise until a verdict passes) and ``_execute_best_of_n`` (generate a
+    batch, keep the best) -- but the guarantee is the same either way.
     """
     config = config or LoopConfig()
-    max_attempts, _threshold = _limits(config, role_config)
+    max_attempts, threshold = _limits(config, role_config)
     started = time.monotonic()
 
     task.started_at = task.started_at or _utcnow()
@@ -69,6 +80,27 @@ async def execute_task(
             started,
         )
 
+    if _policy(config, role_config) == "best_of_n":
+        outcome = await _execute_best_of_n(
+            task, producer, judge, context, max_attempts,
+            _ceiling(config, role_config), started,
+        )
+    else:
+        outcome = await _execute_threshold(
+            task, producer, judge, context, max_attempts, config, started,
+        )
+
+    # The gate is an engine decision applied after the cycle, not a step baked
+    # into the loop (MUSICA's human gate, spec 2).
+    await apply_gate(task, gate)
+    return outcome
+
+
+async def _execute_threshold(
+    task: Task, producer: Producer, judge: Judge, context: str,
+    max_attempts: int, config: LoopConfig, started: float,
+) -> LoopOutcome:
+    """Revise until a verdict passes or the attempt budget runs out."""
     verdict: Verdict | None = None
     artifact: Artifact | None = None
 
@@ -125,11 +157,78 @@ async def execute_task(
             # a re-roll charged against the attempt budget.
             break
 
-    outcome = _finish(task, verdict, started, max_attempts)
-    # The gate is an engine decision applied after the cycle, not a step baked
-    # into the loop (MUSICA's human gate, spec 2).
-    await apply_gate(task, gate)
-    return outcome
+    return _finish(task, verdict, started, max_attempts)
+
+
+async def _execute_best_of_n(
+    task: Task, producer: Producer, judge: Judge, context: str,
+    max_attempts: int, ceiling: float | None, started: float,
+) -> LoopOutcome:
+    """Generate up to ``max_attempts`` independent productions, judge each,
+    and keep the highest-scoring one as the task's canonical result.
+
+    For a judge that ranks reliably but doesn't calibrate to an absolute pass
+    bar (2026-08-19: VisionJudge's rubric scores a genuinely good ARTISTA
+    image around 0.567-0.7 against a real vision model, never clearing a
+    typical 0.7 threshold), threshold-gating fails everything, including
+    good work. A judge that ranks correctly is still useful -- just not as a
+    gate. Every attempt is judged and appended to ``task.artifacts`` exactly
+    like the threshold path (spec 4.1 still holds); a losing attempt is not
+    discarded, it just isn't the one ``task.artifact`` points at (see
+    ``Task.chosen_artifact_id``). Reuses the same never-discard shape
+    ``Runner.rerun_task`` already established, rather than inventing a
+    second one.
+
+    Attempts are independent draws, not revisions -- there is no single
+    "prior" to hand the producer and no issues to react to, so ``Brief``
+    always carries ``prior=None`` here.
+    """
+    attempts_this_call: list[Artifact] = []
+
+    while task.attempts < max_attempts:
+        brief = Brief(
+            task_id=task.id, goal=task.goal, kind=task.kind, role=task.role,
+            context=context, attempt=task.attempts + 1, prior=None, issues=[],
+        )
+
+        try:
+            artifact = await producer.produce(brief)
+        except ProducerUnavailable as exc:
+            return _defer(task, str(exc) or "producer became unavailable", started)
+
+        if artifact is None:
+            raise ProducerError(
+                f"producer {getattr(producer, 'name', '?')!r} returned no artifact for task {task.id}"
+            )
+
+        task.attempts += 1
+        artifact.task_id = task.id
+        artifact.attempt = task.attempts
+        if not artifact.producer:
+            artifact.producer = getattr(producer, "name", "")
+        if not artifact.kind:
+            artifact.kind = task.kind
+
+        try:
+            verdict = await judge.evaluate(task, artifact, context)
+        except Exception as exc:  # noqa: BLE001 - re-raised as a typed error
+            raise JudgeError(
+                f"judge {getattr(judge, 'name', '?')!r} failed on task {task.id}: {exc}"
+            ) from exc
+
+        artifact.verdict = verdict
+        task.artifacts.append(artifact)
+        attempts_this_call.append(artifact)
+
+        # Not "always spend N": a configured ceiling lets an early, clearly
+        # good enough attempt stop the batch rather than paying for the rest
+        # of the budget regardless.
+        if ceiling is not None and verdict.score >= ceiling:
+            break
+
+    winner = max(attempts_this_call, key=lambda a: a.verdict.score)
+    task.chosen_artifact_id = winner.id
+    return _finish(task, winner.verdict, started, max_attempts)
 
 
 def _finish(

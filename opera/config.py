@@ -31,6 +31,16 @@ class RoleConfig:
     pass_threshold: float = 0.7
     kind: str = "text"
     options: dict[str, Any] = field(default_factory=dict)
+    # "threshold": revise up to max_attempts, done once a verdict passes.
+    # "best_of_n": always judge every attempt up to max_attempts (unless
+    # ceiling is cleared early) and keep the highest-scoring one. For a judge
+    # that ranks reliably but doesn't calibrate to an absolute pass bar --
+    # see the 2026-08-19 rubric work -- threshold-gating fails everything;
+    # best-of-N is still useful.
+    policy: str = "threshold"
+    # best_of_n only: stop generating further attempts once one clears this
+    # score. None means always spend the full max_attempts budget.
+    ceiling: float | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +68,11 @@ class LoopConfig:
     # A revision pass is only worth spending when the judge actually said what
     # was wrong.
     revise_only_with_issues: bool = False
+    # Engine-level default when a task has no role_config. See RoleConfig's
+    # policy/ceiling for what these mean; a role_config's own values always
+    # win when one is supplied (same precedence as max_attempts/threshold).
+    policy: str = "threshold"
+    ceiling: float | None = None
 
 
 @dataclass(frozen=True)

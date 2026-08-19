@@ -274,3 +274,136 @@ async def test_revise_only_with_issues_stops_a_blind_reroll():
     await execute_task(task, producer, judge, "ctx",
                        config=LoopConfig(max_attempts=3, revise_only_with_issues=True))
     assert producer.calls == 1
+
+
+# --- best_of_n policy (2026-08-19) --------------------------------------------
+
+async def test_best_of_n_keeps_the_highest_scoring_artifact():
+    """A ranking judge that never clears an absolute pass_threshold is still
+    useful under best_of_n -- it just isn't a gate."""
+    task = _task(role="retoucher", kind="image")
+    producer = ScriptedProducer(["draft-1", "draft-2", "draft-3"])
+    judge = ScriptedJudge([0.4, 0.9, 0.6])
+
+    await execute_task(task, producer, judge, "ctx",
+                       config=LoopConfig(max_attempts=3, policy="best_of_n"))
+
+    assert task.artifact.content == "draft-2"
+    assert task.artifact.verdict.score == pytest.approx(0.9)
+    assert task.status is TaskStatus.DONE
+
+
+async def test_best_of_n_retains_every_attempt_not_just_the_winner():
+    """Losers are not discarded -- same never-discard shape rerun_task uses."""
+    task = _task(role="retoucher", kind="image")
+    producer = ScriptedProducer(["draft-1", "draft-2", "draft-3"])
+    judge = ScriptedJudge([0.4, 0.9, 0.6])
+
+    await execute_task(task, producer, judge, "ctx",
+                       config=LoopConfig(max_attempts=3, policy="best_of_n"))
+
+    assert task.attempts == 3
+    assert [a.content for a in task.artifacts] == ["draft-1", "draft-2", "draft-3"]
+    assert [a.verdict.score for a in task.artifacts] == pytest.approx([0.4, 0.9, 0.6])
+    # The winner is marked chosen; task.artifact resolves to it even though
+    # it is not the last one produced.
+    assert task.chosen_artifact_id == task.artifacts[1].id
+    assert task.artifact is task.artifacts[1]
+
+
+async def test_best_of_n_verdict_is_unmodified_by_the_selection_policy():
+    """best_of_n changes what the loop does with a verdict, not what the
+    judge reported on it."""
+    task = _task(role="retoucher", kind="image")
+    producer = ScriptedProducer(["draft-1", "draft-2"])
+    judge = ScriptedJudge([
+        Verdict(score=0.3, passed=False, issues=["too dark"], judged="artifact", judge_name="j"),
+        Verdict(score=0.9, passed=True, issues=[], judged="artifact", judge_name="j"),
+    ])
+
+    await execute_task(task, producer, judge, "ctx",
+                       config=LoopConfig(max_attempts=2, policy="best_of_n"))
+
+    loser = task.artifacts[0]
+    assert loser.verdict.score == 0.3
+    assert loser.verdict.issues == ["too dark"]
+    assert task.artifact.verdict.issues == []
+
+
+async def test_best_of_n_stops_early_once_an_attempt_clears_the_ceiling():
+    """Must not silently mean 'always spend N renders' -- a configured
+    ceiling lets a clearly good early attempt end the batch."""
+    task = _task(role="retoucher", kind="image")
+    producer = ScriptedProducer(["draft-1", "draft-2", "draft-3", "draft-4"])
+    judge = ScriptedJudge([0.5, 0.95, 0.6, 0.6])
+
+    await execute_task(task, producer, judge, "ctx",
+                       config=LoopConfig(max_attempts=4, policy="best_of_n", ceiling=0.9))
+
+    assert producer.calls == 2, "should stop right after the 0.95 attempt clears the 0.9 ceiling"
+    assert task.attempts == 2
+    assert task.artifact.content == "draft-2"
+
+
+async def test_best_of_n_without_a_ceiling_spends_the_full_budget():
+    task = _task(role="retoucher", kind="image")
+    producer = ScriptedProducer(["draft-1", "draft-2", "draft-3"])
+    judge = ScriptedJudge([0.99, 0.99, 0.99])  # every attempt would "clear" any reasonable bar
+
+    await execute_task(task, producer, judge, "ctx",
+                       config=LoopConfig(max_attempts=3, policy="best_of_n"))
+
+    assert producer.calls == 3, "no ceiling configured means the full N is always spent"
+
+
+async def test_best_of_n_n_comes_from_config():
+    task = _task(role="retoucher", kind="image")
+    producer = ScriptedProducer(["a", "b", "c", "d", "e"])
+    judge = ScriptedJudge([0.5, 0.5, 0.5, 0.5, 0.5])
+
+    await execute_task(task, producer, judge, "ctx",
+                       config=LoopConfig(max_attempts=5, policy="best_of_n"))
+
+    assert producer.calls == 5
+
+
+async def test_best_of_n_role_config_overrides_loop_config():
+    """Same precedence as max_attempts/pass_threshold: a role_config's policy
+    wins over the engine-level default."""
+    task = _task(role="retoucher", kind="image")
+    producer = ScriptedProducer(["draft-1", "draft-2"])
+    judge = ScriptedJudge([0.3, 0.8])
+    role = RoleConfig(model="m", max_attempts=2, policy="best_of_n")
+
+    # LoopConfig defaults to threshold; role_config overrides it.
+    await execute_task(task, producer, judge, "ctx",
+                       config=LoopConfig(max_attempts=2, policy="threshold"),
+                       role_config=role)
+
+    assert task.artifact.content == "draft-2"
+    assert task.attempts == 2, "threshold would have stopped at attempt 1 if it scored under 0.7"
+
+
+async def test_default_policy_is_threshold_videa_style():
+    """No policy configured anywhere -- VIDEA's text roles -- behaves exactly
+    as before this feature existed: revise until a verdict passes, stopping
+    immediately rather than spending the rest of the attempt budget."""
+    task = _task()
+    producer = ScriptedProducer(["good-enough", "would-never-run"])
+    judge = ScriptedJudge([True])
+
+    await execute_task(task, producer, judge, "ctx", config=LoopConfig(max_attempts=2))
+
+    assert producer.calls == 1, "threshold stops as soon as a verdict passes"
+    assert task.artifact.content == "good-enough"
+
+
+async def test_best_of_n_unavailable_producer_mid_batch_defers_without_losing_attempts():
+    task = _task(role="retoucher", kind="image")
+    producer = GoesOfflineProducer(name="flaky", kind="image")
+
+    await execute_task(task, producer, ScriptedJudge([0.5]), "ctx",
+                       config=LoopConfig(max_attempts=3, policy="best_of_n"))
+
+    assert task.status is TaskStatus.DEFERRED
+    assert task.artifacts == []

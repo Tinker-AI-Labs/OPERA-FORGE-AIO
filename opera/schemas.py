@@ -128,10 +128,25 @@ class Task(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    # Set by a best_of_n policy when the winner among several judged
+    # attempts isn't the last one produced. None (the threshold-gating
+    # default) means "the last one produced is canonical", unchanged from
+    # before this field existed.
+    chosen_artifact_id: str | None = None
 
     @property
     def artifact(self) -> Artifact | None:
-        """The final artifact -- the one whose verdict the task is reported on."""
+        """The final artifact -- the one whose verdict the task is reported on.
+
+        Every attempt stays in ``artifacts`` regardless of policy (spec 4.1:
+        a stored artifact always carries its own verdict). This is just which
+        one is canonical -- the most recent production by default, or the
+        one ``chosen_artifact_id`` names when a best_of_n policy set it.
+        """
+        if self.chosen_artifact_id is not None:
+            for art in self.artifacts:
+                if art.id == self.chosen_artifact_id:
+                    return art
         return self.artifacts[-1] if self.artifacts else None
 
     @property
