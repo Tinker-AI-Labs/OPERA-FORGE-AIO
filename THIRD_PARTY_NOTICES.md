@@ -15,14 +15,15 @@ These are imported directly into the OPERA process, so their terms apply to
 distribution of OPERA itself. All are permissive and impose no copyleft
 obligation.
 
-| Package  | License      | Notes                                    |
-|----------|--------------|------------------------------------------|
-| FastAPI  | MIT          | Attribution only                          |
-| Starlette| BSD-3-Clause | Attribution only                          |
-| Pydantic | MIT          | Attribution only                          |
-| httpx    | BSD-3-Clause | Attribution only                          |
-| PyYAML   | MIT          | Attribution only                          |
-| pytest   | MIT          | Test-time only, not distributed           |
+| Package        | License      | Notes                                    |
+|----------------|--------------|------------------------------------------|
+| FastAPI        | MIT          | `service` extra. Attribution only         |
+| Starlette      | BSD-3-Clause | Transitive dependency of FastAPI. Attribution only |
+| uvicorn        | BSD-3-Clause | `service` extra, imported directly in `service/cli.py`'s `serve` command. Attribution only |
+| Pydantic       | MIT          | Attribution only                          |
+| httpx          | BSD-3-Clause | Attribution only                          |
+| pytest         | MIT          | `dev` extra. Test-time only, not distributed |
+| pytest-asyncio | Apache-2.0   | `dev` extra. Test-time only, not distributed |
 
 No GPL, LGPL, AGPL, or source-available dependency is linked into OPERA.
 **This is a deliberate constraint. Adding one would change what the Company
