@@ -65,6 +65,48 @@ not) is reliably safe on this card, or whether Retry B's clean run was
 itself the lucky outcome and a repeat could still hang. Sample size is 1
 per condition throughout this whole investigation.
 
+## 2026-08-19 — cheapest test for "can this hardware do VIDEA at all"
+
+Not run. Proposed only, per the standing instruction not to build VIDEA
+before this question is answered — MUSICA and VIDEA should not get built
+out on an assumption about this hardware that hasn't been checked.
+
+VIDEA's own producer would be a video diffusion model, and its judge
+(`FrameSampleJudge`) wraps `VisionJudge` over frames extracted *after*
+generation via ffmpeg — so the judge path isn't the risk, the **producer's
+video VAE decode** is, for the same reason ARTISTA's image VAE decode was:
+a short clip is many more frames' worth of latent data through the same
+kind of decode operation that already faulted once on this card.
+
+**Cheapest real test, isolating exactly that**: a ComfyUI workflow with no
+`KSampler` at all —
+`CheckpointLoaderSimple → EmptyLatentImage(batch_size=N) → VAEDecodeTiled →
+SaveImage` — decoding a batch of *empty/random* latents rather than
+sampling them. This stresses VAE decode at N-frame-equivalent batch scale
+directly, without running the (much more expensive) UNet sampling step and
+without downloading any video model. Reuses the FLUX checkpoint already on
+disk; a video model's own VAE would differ in exact cost, but this answers
+the load-bearing question — does *decoding a batch this size* hang or blow
+up in wall-clock — before spending anything on a real video model.
+
+- **Setup cost**: ~5 minutes (one workflow JSON, batch_size parameterised).
+- **Run cost**: supervised only, same as every GPU-side attempt on this
+  box. Escalate batch size gradually (e.g. 1 → 4 → 16 → 32, roughly what a
+  1-4 second clip at low fps would need) and stop at the first hang, or
+  once satisfied the scaling holds — each trial should cost low
+  single-digit minutes based on the per-image numbers already measured.
+- **Disk cost**: zero — no new model download.
+- **What it answers**: whether batch-scale VAE decode is safe on this GPU
+  at all, and how wall-clock scales with batch size (linear? worse?) —
+  enough to project whether a real clip is minutes or hours before
+  committing to acquiring an actual video model.
+- **What it does NOT answer**: whether a real video UNet fits this card's
+  8GB VRAM, or whether video-specific attention/temporal ops have their own
+  failure modes distinct from VAE decode. That needs the more expensive
+  real-model test (a genuine, minimal video generation — shortest duration,
+  lowest resolution, fewest steps, on the smallest available local video
+  model) as a second, costlier step only if this one passes.
+
 ## Standing correction (see also `.notes/posting.txt`)
 
 This machine has exactly one GPU (`lspci`: `03:00.0`, AMD RX 6600). Headless
