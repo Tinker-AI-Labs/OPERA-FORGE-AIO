@@ -162,7 +162,7 @@ async def test_unavailable_comfyui_defers_the_task_in_a_real_run(tmp_path):
 
 RUBRIC_GOOD = json.dumps({
     "subject_present": True,
-    "elements": [], "artifacts_present": False, "composition_intact": True,
+    "elements": [], "artifacts_present": False, "has_visual_corruption": False,
 })
 
 
@@ -203,7 +203,7 @@ async def test_full_produce_judge_revise_cycle_over_images(tmp_path):
         json.dumps({
             "subject_present": True,
             "elements": [{"element": "tower", "matched": False, "note": "tower should be red"}],
-            "artifacts_present": False, "composition_intact": True,
+            "artifacts_present": False, "has_visual_corruption": False,
         }),
         RUBRIC_GOOD,
     ])

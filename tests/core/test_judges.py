@@ -91,7 +91,7 @@ RUBRIC_GOOD = {
     "subject_present": True,
     "elements": [{"element": "tower", "matched": True}],
     "artifacts_present": False,
-    "composition_intact": True,
+    "has_visual_corruption": False,
 }
 
 
@@ -138,36 +138,38 @@ async def test_vision_judge_computes_score_from_rubric_not_a_self_reported_numbe
         "elements": [{"element": "snowy forest", "matched": False, "note": "beach instead"}],
         "artifacts_present": True,
         "artifacts_note": "warped limbs",
-        "composition_intact": True,
+        "has_visual_corruption": False,
     }
     v2 = await VisionJudge(_stub(bad), model="v").evaluate(
         TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
-    assert v2.score == pytest.approx(0.15)  # composition_intact=True is the only credit earned
+    assert v2.score == pytest.approx(0.0)
     assert v2.passed is False
     assert any("subject not present" in i for i in v2.issues)
     assert any("snowy forest" in i for i in v2.issues)
     assert any("artifacts" in i for i in v2.issues)
 
 
-async def test_vision_judge_broken_composition_costs_points_but_does_not_zero_a_real_match():
-    """2026-08-19 revision, confirmed necessary live against both llava:7b and
-    qwen2.5vl:7b: composition_intact must NOT hard-gate the score. Both
-    models routinely set it False on a coherent image that simply isn't the
-    style/medium they expected (e.g. a 3D render vs. a photo) -- gating on it
-    zeroed out otherwise-correct verdicts. It costs its own weight and no
-    more, so a real subject/element match still dominates."""
+async def test_vision_judge_gates_the_score_to_zero_on_genuine_corruption():
+    """2026-08-19: the field was renamed composition_intact ->
+    has_visual_corruption and reworded to ask the corruption question
+    unambiguously (melted geometry, noise, garbled anatomy -- explicitly NOT
+    "is this a photograph"). Re-tested live against llava:7b under the
+    clearer wording: it no longer misreads a stylistically-different-but-
+    clean image as corrupted, so the hard gate is correct again -- see the
+    full gate-vs-weight decision (including the qwen2.5vl:7b result) recorded
+    in _score_rubric's own docstring."""
     payload = {
         "subject_present": True,
         "elements": [{"element": "tower", "matched": True}],
         "artifacts_present": False,
-        "composition_intact": False,
-        "composition_note": "not a photograph, looks like a 3D render",
+        "has_visual_corruption": True,
+        "corruption_note": "melted geometry, unreadable noise",
     }
-    v = await VisionJudge(_stub(payload), model="v", threshold=0.7).evaluate(
+    v = await VisionJudge(_stub(payload), model="v", threshold=0.1).evaluate(
         TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
-    assert v.score == pytest.approx(0.85)
-    assert v.passed is True, "a real subject+element match must survive one wrong composition flag"
-    assert "composition is not intact" in v.issues[0]
+    assert v.score == 0.0
+    assert v.passed is False
+    assert "image has visual corruption" in v.issues[0]
 
 
 async def test_vision_judge_never_reads_a_self_reported_score_or_passed_field():
@@ -182,7 +184,7 @@ async def test_vision_judge_never_reads_a_self_reported_score_or_passed_field():
 
 
 @pytest.mark.parametrize("missing_key", [
-    "subject_present", "artifacts_present", "composition_intact", "elements",
+    "subject_present", "artifacts_present", "has_visual_corruption", "elements",
 ])
 async def test_vision_judge_missing_rubric_field_is_a_failure_not_a_default(missing_key):
     payload = dict(RUBRIC_GOOD)
@@ -204,7 +206,7 @@ async def test_vision_judge_no_named_elements_defaults_to_no_penalty():
         "subject_present": True,
         "elements": [],
         "artifacts_present": False,
-        "composition_intact": True,
+        "has_visual_corruption": False,
     }
     v = await VisionJudge(_stub(payload), model="v").evaluate(
         TASK, Artifact(kind="image", meta={"image_b64": "QUJD"}), "")
@@ -239,7 +241,7 @@ async def test_frame_sample_judge_aggregates_and_labels_issues(monkeypatch):
             "subject_present": True,
             "elements": [{"element": "tower", "matched": False, "note": "tower is blue here"}],
             "artifacts_present": False,
-            "composition_intact": True,
+            "has_visual_corruption": False,
         }),
     ])
     client = StubLLMClient(default=lambda s, p: next(payloads))
@@ -400,7 +402,7 @@ async def test_vision_judge_has_nothing_left_to_reconcile():
     art = Artifact(kind="image", meta={"image_b64": "QUJD"})
     bad = {
         "subject_present": False,
-        "elements": [], "artifacts_present": True, "composition_intact": True,
+        "elements": [], "artifacts_present": True, "has_visual_corruption": False,
     }
     v = await VisionJudge(_stub(bad), model="v", threshold=0.7).evaluate(TASK, art, "")
     assert v.passed is False

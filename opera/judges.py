@@ -42,14 +42,21 @@ VISION_RUBRIC_SYSTEM = (
     '"elements": [{"element": "<a distinct visual element named in the goal>", '
     '"matched": true|false, "note": "..."}], '
     '"artifacts_present": true|false, "artifacts_note": "...", '
-    '"composition_intact": true|false, "composition_note": "..."}\n'
+    '"has_visual_corruption": true|false, "corruption_note": "..."}\n'
     "List each distinct visual element the goal names (subjects, objects, "
     "setting, style, color) as its own entry in 'elements' with whether it is "
-    "actually present in the image. 'artifacts_present' means visible "
-    "rendering defects (garbling, warped anatomy, broken geometry, text soup) "
-    "-- not stylistic choices you personally dislike. 'composition_intact' "
-    "means the image is a coherent picture at all, not corrupted or "
-    "unreadable. Be specific in the notes; they become the issue list."
+    "actually present in the image. 'artifacts_present' means small, "
+    "localized rendering defects -- a warped hand, a smudge, an odd seam. "
+    "'has_visual_corruption' asks a narrower, stricter question: is the image "
+    "itself technically broken as a picture -- melted or dissolving geometry, "
+    "static or visual noise, anatomy so garbled the subject is unrecognizable, "
+    "or large areas that render as unreadable mush. This is NOT about whether "
+    "the image matches the expected subject, medium, or style: a clean, "
+    "correctly-rendered 3D render, illustration, icon, or any non-photographic "
+    "image is NOT corrupted just because it is not a photograph. Only answer "
+    "true if the image itself is technically broken, independent of what it "
+    "depicts or what style it's in. Be specific in the notes; they become the "
+    "issue list."
 )
 
 Check = Callable[[Artifact], tuple[bool, str]]
@@ -125,17 +132,42 @@ def _score_rubric(data: dict[str, Any], *, judge_name: str) -> tuple[float, list
     ``Verdict.judged``: derive the verdict from what the model actually
     observed, never accept its self-assessment of the outcome.
 
+    2026-08-19: the field originally named 'composition_intact' was renamed
+    to 'has_visual_corruption' and reworded to ask the corruption question
+    unambiguously (melted geometry, noise, garbled anatomy -- explicitly NOT
+    "is this a photograph"). Test image throughout: hero.png, a stylized
+    isometric icon (a glowing purple 3D platform with a translucent wireframe
+    copy above it) -- GOOD goal describes it accurately, BAD goal is "a
+    photorealistic action photo of a golden retriever running on a sunny
+    beach at sunset" and has nothing to do with it.
+
+    GATE DECISION, recorded here so it is not re-litigated from scratch:
+    kept as a hard gate. Live-tested with a hard gate under the new wording
+    against both models:
+      - llava:7b: FIXED. has_visual_corruption correctly False on both goals
+        (previously it hard-gated the GOOD goal to 0.0 by misreading the old
+        composition_intact field). Final scores discriminate correctly:
+        GOOD 0.700 vs. BAD 0.600.
+      - qwen2.5vl:7b: STILL WRONG, but not inverted -- has_visual_corruption
+        came back True on BOTH goals, including the clean, non-corrupted
+        icon, with a fabricated corruption_note ("melted geometry... at the
+        corners and edges") describing defects that are not actually in the
+        image. Both goals gate to 0.0 (0.000 vs. 0.000): no discrimination,
+        not an inversion. This is not a wording problem anymore -- the
+        explicit "not a photograph doesn't mean corrupted" clarification did
+        not stop it. It looks like a genuine perception limitation of this
+        model on stylized/non-photographic images, separate from the
+        semantic-ambiguity bug the rename fixed for llava:7b.
+    Kept the gate because llava:7b is the priority/reference model
+    throughout this investigation and the gate is now demonstrably correct
+    for it. If qwen2.5vl:7b is ever the configured vision model, know that
+    its corruption gate is unreliable on non-photographic imagery -- that is
+    a model limitation to route around (e.g. a different vision model, or
+    reintroducing a per-model override), not something to silently retest.
+
     Weights: subject presence and prompt-element coverage are the two things
-    that make an image *right*; freedom from artifacts and an intact
-    composition are what make it *usable*. Composition does NOT hard-gate the
-    score to zero -- confirmed live 2026-08-18 against both llava:7b and
-    qwen2.5vl:7b that weak vision models routinely misread
-    'composition_intact' as "does this look like the kind of image I
-    expected" rather than "is this technically corrupted", and set it False
-    on a perfectly coherent image that just isn't a photograph. Gating on a
-    field models this unreliable would zero out otherwise-correct verdicts;
-    weighting it lets the (empirically more reliable) subject/element signal
-    still dominate.
+    that make an image *right*; freedom from small localized artifacts is
+    what makes it *usable*.
     """
     def _bool(key: str) -> bool:
         if key not in data:
@@ -151,7 +183,7 @@ def _score_rubric(data: dict[str, Any], *, judge_name: str) -> tuple[float, list
         val = data.get(key)
         return str(val).strip() if val else ""
 
-    composition_intact = _bool("composition_intact")
+    has_visual_corruption = _bool("has_visual_corruption")
     subject_present = _bool("subject_present")
     artifacts_present = _bool("artifacts_present")
 
@@ -172,9 +204,14 @@ def _score_rubric(data: dict[str, Any], *, judge_name: str) -> tuple[float, list
         )
 
     issues: list[str] = []
-    if not composition_intact:
-        note = _note("composition_note")
-        issues.append("composition is not intact" + (f": {note}" if note else ""))
+    # GATE, confirmed to hold under the clearer wording (see the decision
+    # note above): genuine corruption makes the image unusable regardless of
+    # what else the rubric says, so it is checked -- and can return -- first.
+    if has_visual_corruption:
+        note = _note("corruption_note")
+        issues.append("image has visual corruption" + (f": {note}" if note else ""))
+        return 0.0, issues
+
     if not subject_present:
         note = _note("subject_note")
         issues.append("subject not present" + (f": {note}" if note else ""))
@@ -193,8 +230,7 @@ def _score_rubric(data: dict[str, Any], *, judge_name: str) -> tuple[float, list
         # Nothing named to check against -- no evidence to penalise, so this
         # component defaults to full credit rather than zero.
         score += 0.4
-    score += 0.0 if artifacts_present else 0.15
-    score += 0.15 if composition_intact else 0.0
+    score += 0.0 if artifacts_present else 0.3
 
     return _clamp(score), issues
 

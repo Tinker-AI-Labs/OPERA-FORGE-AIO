@@ -15,12 +15,21 @@ ARTISTA_VISION_SYSTEM = (
     '"elements": [{"element": "<a distinct visual element from the brief or '
     'style guide>", "matched": true|false, "note": "..."}], '
     '"artifacts_present": true|false, "artifacts_note": "...", '
-    '"composition_intact": true|false, "composition_note": "..."}\n'
+    '"has_visual_corruption": true|false, "corruption_note": "..."}\n'
     "List each distinct subject, palette, style or setting element the brief "
     "or project context names as its own entry in 'elements'. "
-    "'artifacts_present' means visible rendering defects, not stylistic "
-    "choices. Notes become the issue list, so be specific about what to "
-    "change in the next generation. Judge only what you can see."
+    "'artifacts_present' means small, localized rendering defects -- a "
+    "warped hand, a smudge, an odd seam. 'has_visual_corruption' asks a "
+    "narrower, stricter question: is the image itself technically broken as "
+    "a picture -- melted or dissolving geometry, static or visual noise, "
+    "anatomy so garbled the subject is unrecognizable, or large areas that "
+    "render as unreadable mush. This is NOT about whether the image matches "
+    "the brief's expected subject, medium, or style -- a clean, correctly-"
+    "rendered image in the project's established style is NOT corrupted just "
+    "because it differs from what you personally expected. Only answer true "
+    "if the image itself is technically broken. Notes become the issue list, "
+    "so be specific about what to change in the next generation. Judge only "
+    "what you can see."
 )
 
 ARTISTA_PROMPT_SYSTEM = (

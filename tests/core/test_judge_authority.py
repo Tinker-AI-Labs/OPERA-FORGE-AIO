@@ -65,7 +65,7 @@ async def test_judged_is_never_read_from_model_output():
                         "judged": "MODEL-INJECTED-VALUE"})
     vision_client = _stub({
         "subject_present": True,
-        "elements": [], "artifacts_present": False, "composition_intact": True,
+        "elements": [], "artifacts_present": False, "has_visual_corruption": False,
         "judged": "MODEL-INJECTED-VALUE",
     })
 
@@ -164,12 +164,12 @@ async def test_llm_judge_treats_unparseable_score_as_a_failure_not_a_zero(bad_pa
 
 
 @pytest.mark.parametrize("bad_payload,label", [
-    ({"elements": [], "artifacts_present": False, "composition_intact": True}, "missing-subject"),
-    ({"subject_present": True, "artifacts_present": False, "composition_intact": True}, "missing-elements"),
-    ({"subject_present": True, "elements": [], "composition_intact": True}, "missing-artifacts"),
-    ({"subject_present": True, "elements": [], "artifacts_present": False}, "missing-composition"),
+    ({"elements": [], "artifacts_present": False, "has_visual_corruption": False}, "missing-subject"),
+    ({"subject_present": True, "artifacts_present": False, "has_visual_corruption": False}, "missing-elements"),
+    ({"subject_present": True, "elements": [], "has_visual_corruption": False}, "missing-artifacts"),
+    ({"subject_present": True, "elements": [], "artifacts_present": False}, "missing-corruption-flag"),
     ({"subject_present": "yes", "elements": [], "artifacts_present": False,
-      "composition_intact": True}, "wrong-type-string"),
+      "has_visual_corruption": False}, "wrong-type-string"),
 ])
 async def test_vision_judge_treats_unparseable_rubric_as_a_failure_not_a_default(bad_payload, label):
     """2026-08-19 rubric rewrite: VisionJudge no longer asks for or reads a
