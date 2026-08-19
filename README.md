@@ -1,5 +1,7 @@
 # OPERA
 
+[![License: Proprietary](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
+
 A local, engine-agnostic **produce → judge → revise → persist** loop with project
 memory. Three FORGE engines are built on top of it.
 
