@@ -91,6 +91,30 @@ manipulated or off-rails conversation can't talk the pipeline into ignoring
 the constraints. This holds regardless of which model is running under
 PUBLISHA (gemma2 today, potentially something else later).
 
+## Missing-field convention (loud failure, not silent guessing)
+
+Borrowed from game-dev's own convention for this exact problem: the
+magenta/black checkerboard "missing texture" tile. If a preseed field is
+left blank, the pipeline renders the literal missing-asset placeholder
+instead of quietly generating something to fill the gap — makes an
+unfilled field visible at a glance instead of invisible until something
+looks subtly wrong three revisions later.
+
+- **GAMEA** — unfilled palette/material field → checkerboard texture on
+  that asset slot in PixelSmith's preview, in place of a guessed material.
+- **VIDEA** — unfilled reference-image slot → a flat "MISSING" placeholder
+  frame in the turnaround set instead of silently skipping IP-Adapter
+  conditioning.
+- **PUBLISHA** — no visual equivalent (text engine); same idea translated
+  is a literal `[MISSING: field_name]` token left in the draft instead of
+  the model quietly hallucinating a trait to cover the gap. A hallucinated
+  trait is invisible; a missing-token isn't.
+
+This doubles as a judge signal for free: `has_missing_placeholder_tile` /
+`has_missing_field_token` is a trivial check against the artifact, versus
+trying to infer after the fact whether the model made something up because
+a SeedSheet field was empty.
+
 ## Judge rubric additions
 
 New rubric fields in `opera/judges.py`, following the existing pattern
@@ -160,7 +184,11 @@ not less. Fix B1 first.
    `opera/memory.py`.
 5. Build the three preseed forms (VIDEA / GAMEA / PUBLISHA) and the
    new/existing-project lookup in `pipeline.py`.
-6. Add the judge rubric fields above to `opera/judges.py`.
+6. Add the judge rubric fields above to `opera/judges.py`, including the
+   missing-field placeholder checks.
+7. Build the missing-texture / `[MISSING: field_name]` placeholder assets
+   and wire them into each engine's generation path as the fallback when a
+   SeedSheet field is blank.
 
 None of this has been implemented yet — this file is the spec to build
 against.
