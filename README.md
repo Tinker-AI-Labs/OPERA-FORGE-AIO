@@ -1,5 +1,6 @@
 # OPERA
 
+[![tests](https://github.com/Tinker-AI-Labs/OPERA-FORGE-AIO/actions/workflows/tests.yml/badge.svg)](https://github.com/Tinker-AI-Labs/OPERA-FORGE-AIO/actions/workflows/tests.yml)
 [![License: Proprietary](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 
 A local, engine-agnostic **produce → judge → revise → persist** loop with project
