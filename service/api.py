@@ -59,7 +59,7 @@ def create_app(context: AppContext | None = None, **ctx_kwargs: Any) -> FastAPI:
                 await asyncio.gather(*app.state.tasks, return_exceptions=True)
             await app.state.ctx.aclose()
 
-    app = FastAPI(title="OPERA", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="OPERA", version="0.2.0", lifespan=lifespan)
 
     def ctx(request: Request) -> AppContext:
         return request.app.state.ctx
