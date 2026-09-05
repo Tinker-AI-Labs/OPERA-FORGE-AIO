@@ -30,6 +30,11 @@ class CreateProject(BaseModel):
 
 class SubmitRun(BaseModel):
     goal: str = Field(min_length=1)
+    # Applied to every planned task (Task.params -> Brief.params), same
+    # override the CLI's repeatable --param KEY=VALUE gives -- e.g. GAMEA's
+    # images_dir/workflow, or ARTISTA's explicit prompt override. Engine-
+    # supplied vocabulary; the API itself never interprets these keys.
+    params: dict[str, str] = Field(default_factory=dict)
 
 
 class RunAccepted(BaseModel):
@@ -114,7 +119,8 @@ def create_app(context: AppContext | None = None, **ctx_kwargs: Any) -> FastAPI:
 
         async def execute() -> None:
             try:
-                await runner.run_project(project_id, body.goal, run_id=run_id)
+                await runner.run_project(project_id, body.goal, run_id=run_id,
+                                         task_params=body.params or None)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
