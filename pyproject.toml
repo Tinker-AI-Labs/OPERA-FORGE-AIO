@@ -13,7 +13,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 opera = "service.cli:main"
 
 [tool.setuptools]
-packages = ["opera", "opera.llm", "engines", "engines.videa", "engines.artista", "engines.musica", "service"]
+packages = ["opera", "opera.llm", "engines", "engines.videa", "engines.artista", "engines.musica", "engines.gamea", "service"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

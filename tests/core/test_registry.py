@@ -122,7 +122,7 @@ def test_core_declares_no_engine_vocabulary():
     import tokenize
 
     banned = {"writer", "reasoner", "coder", "composer", "arranger", "mixer",
-              "prompt_smith", "retoucher"}
+              "prompt_smith", "retoucher", "foundry"}
     core = pathlib.Path(__file__).resolve().parents[2] / "opera"
     offenders = []
     for py in sorted(core.rglob("*.py")):
