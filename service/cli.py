@@ -45,6 +45,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("goal")
     p_run.add_argument("--project", default=None, help="existing project id")
     p_run.add_argument("--name", default=None, help="name for a new project")
+    p_run.add_argument(
+        "--param", action="append", default=[], metavar="KEY=VALUE",
+        help="set a param on every planned task (repeatable); read by a "
+             "producer through Brief.params, e.g. --param images_dir=./photos "
+             "for GAMEA's photo-folder path, or --param prompt='...' for "
+             "ARTISTA's explicit prompt override",
+    )
 
     sub.add_parser("health", help="report engine and model-host reachability")
 
@@ -101,7 +108,8 @@ async def _cmd_run(ctx, args) -> int:
     else:
         project = ctx.store.create(args.name or args.goal[:60], ctx.engine_name)
 
-    report = await ctx.runner().run(project, args.goal)
+    task_params = _parse_params(args.param)
+    report = await ctx.runner().run(project, args.goal, task_params=task_params)
     run = report.run
 
     if args.as_json:
@@ -195,6 +203,22 @@ async def _cmd_bible(ctx, args) -> int:
     project = ctx.store.load(args.project)
     print(BibleWriter(ctx.config).context(project.bible))
     return 0
+
+
+def _parse_params(raw: list[str]) -> dict[str, str]:
+    """Parse repeated ``--param KEY=VALUE`` flags into a dict.
+
+    Values are always strings -- a producer that expects something else
+    (an int, say) is responsible for its own conversion, same as any other
+    CLI-sourced string.
+    """
+    params: dict[str, str] = {}
+    for item in raw:
+        key, sep, value = item.partition("=")
+        if not sep:
+            raise OperaError(f"--param must be KEY=VALUE, got {item!r}")
+        params[key.strip()] = value
+    return params
 
 
 def _run_payload(run) -> dict[str, Any]:

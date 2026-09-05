@@ -126,6 +126,11 @@ class Task(BaseModel):
     deferred_reason: str | None = None
     corrections: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
+    # Carried into every Brief this task produces (opera/loop.py). Engine-
+    # supplied vocabulary (spec 3.3) -- e.g. GAMEA's images_dir/workflow, or
+    # ARTISTA's explicit prompt override -- read from here by a producer,
+    # never interpreted by the core.
+    params: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime | None = None
     finished_at: datetime | None = None
     # Set by a best_of_n policy when the winner among several judged
