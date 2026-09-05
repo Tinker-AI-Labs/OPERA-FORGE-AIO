@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass, replace
+from typing import Any
 
 from .bible import BibleWriter, LedgerWriter, ProjectStore
 from .config import OperaConfig
@@ -69,16 +70,23 @@ class Runner:
     # -- public surface -------------------------------------------------------
 
     async def run_project(self, project_id: str, goal: str, *,
-                          run_id: str | None = None) -> RunReport:
+                          run_id: str | None = None,
+                          task_params: dict[str, Any] | None = None) -> RunReport:
         """Load, run, and leave the project persisted on disk."""
         project = self.store.load(project_id)
-        return await self.run(project, goal, run_id=run_id)
+        return await self.run(project, goal, run_id=run_id, task_params=task_params)
 
     async def run(self, project: Project, goal: str, *,
-                  run_id: str | None = None) -> RunReport:
+                  run_id: str | None = None,
+                  task_params: dict[str, Any] | None = None) -> RunReport:
         """Execute one run against ``project``.
 
         Every mutable thing here is a local. Nothing is stashed on ``self``.
+
+        ``task_params`` is a caller-supplied override applied to every planned
+        task before execution (a CLI ``--param``/API field, say) -- it lands
+        on ``Task.params`` and reaches each task's Brief unchanged (spec 3.1:
+        the core never interprets it, only carries it).
         """
         started = time.monotonic()
         # A caller may supply the id so it can report it before the run starts
@@ -99,6 +107,10 @@ class Runner:
                 detail={"error": str(exc)}))
             self.store.save(project)
             return self._report(run, project, started)
+
+        if task_params:
+            for task in tasks:
+                task.params = {**task.params, **task_params}
 
         run.tasks = tasks
         self.store.save(project)  # 4.6: the plan itself survives a crash

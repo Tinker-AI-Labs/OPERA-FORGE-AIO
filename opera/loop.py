@@ -114,6 +114,7 @@ async def _execute_threshold(
             attempt=task.attempts + 1,
             prior=artifact,
             issues=list(verdict.issues) if verdict is not None else [],
+            params=dict(task.params),
         )
 
         try:
@@ -189,6 +190,7 @@ async def _execute_best_of_n(
         brief = Brief(
             task_id=task.id, goal=task.goal, kind=task.kind, role=task.role,
             context=context, attempt=task.attempts + 1, prior=None, issues=[],
+            params=dict(task.params),
         )
 
         try:
