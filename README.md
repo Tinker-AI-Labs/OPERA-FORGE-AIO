@@ -4,13 +4,14 @@
 [![License: Proprietary](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 
 A local, engine-agnostic **produce → judge → revise → persist** loop with project
-memory. Three FORGE engines are built on top of it.
+memory. Four FORGE engines are built on top of it.
 
 | Engine | Produces | Judge | `judged` reported |
 |---|---|---|---|
 | VIDEA | text, code, video | LLM review; frame sampling for video | `artifact` / `frames` |
 | ARTISTA | images (ComfyUI) | local vision model | `artifact` (images), `plan` (prompts) |
 | MUSICA | audio (ACE-Step / FluidSynth) | deterministic checks + plan review + human gate | `artifact+plan` |
+| GAMEA | 3D assets (.glb via Meshroom or ComfyUI, always finished with a Blender cleanup pass) | deterministic mesh QC (trimesh: tri budget, watertightness, UVs, degenerate faces) | `artifact` |
 
 Everything runs locally: Ollama for LLM roles, local generators for media. No
 cloud APIs, no vector DB, no web UI.
@@ -80,7 +81,7 @@ opera/          the shared core -- knows nothing about any engine
   router.py     goal -> (role, kind), engine-supplied vocabulary
   runner.py     orchestrates a run over a task list
   registry.py   EngineSpec registration
-engines/        videa/ artista/ musica/ -- each: spec.py producers.py judge.py
+engines/        videa/ artista/ musica/ gamea/ -- each: spec.py producer(s).py judge.py
 service/        api.py (FastAPI) cli.py context.py
 tests/          core/ engines/ + acceptance checklist
 ```
